@@ -1,0 +1,681 @@
+---
+title: "2016 Fall Stat 243 Final Project"
+author: "Ruonan Hao, Mingjia Chen, Yizhou Zhao,Zhenqi Wang"
+date: "November 9, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+# 243 final project
+```{}
+install.packages(c("devtools", "roxygen2", "testthat", "knitr"))
+install.packages("rstudioapi")
+rstudioapi::isAvailable("0.99.149")
+devtools::install_github("hadley/devtools")
+library(devtools)
+library(roxygen2)
+has_devel()
+devtools::create("~/MFA")
+```
+
+```{r}
+
+############ BUILD A CLASS #################
+
+
+
+# create a s4 class "mfa"
+# 'mfa' has 4 attributes:
+# mfa@eigenvalues: is a vector of square of singlular value(diagonal elements of delta)
+# mfa@common_factor_score: is a matrix
+# mfa@partial_factor_score: is a list of K matrix, K is the number of data groups
+# mfa@loadings: is a matrix, the final Q
+
+setClass(
+Class="mfa",
+slots=list(
+sets="list",
+weights="numeric",
+eigenvalues="numeric",
+common_factor_score="matrix",
+partial_factor_score="list",
+loadings="matrix")
+)
+
+
+
+############ constructor function: building the model #################
+#' @title MFA
+#' @description Creates an object of class \code{"mfa"}
+#' @param data could be a matrix or a data.frame, should be in the same order of sets
+#' @param sets list of vector contains vector of indices or variable names of each group
+#' @param ncomps integer indicating how many number of components are to be extracted
+#' @param center either a logical value or a numeric vector of length equal to the number of active variables in the analysis
+#' @param scale either a logical value or a numeric vector of length equal to the number of active variables in the analysis
+#' @return an object of class mfa
+#' @export
+#' @examples
+#' # default 
+#' 
+#' test<-mfa(wine_data,sets=list(1:6,7:12,13:18,19:23,24:29,30:34,35:38,39:44,45:49,50:53))
+#' 
+#' # use your own scale method
+#' ndatas<-apply(wine_data,2,function(x){ (x-mean(x))/norm(x-mean(x),type="2")})
+#' test<-mfa(ndatas,sets=list(1:6,7:12,13:18,19:23,24:29,30:34,35:38,39:44,45:49,50:53),center=FALSE,scale=FALSE)
+#' 
+#' # only print the first two components 
+#' test<-mfa(ndatas,sets=list(1:6,7:12,13:18,19:23,24:29,30:34,35:38,39:44,45:49,50:53),ncomp=2,center=FALSE,scale=FALSE)
+#' 
+#' # character sets
+#' # Use the first and last variable names of each group: 
+#' test<-mfa(ndatas,sets=list(c("V1.G1","V6.G1"),c("V1.G2","V8.G2")...),...)
+#' # or use the full list of variable names of each group:
+#' test<-mfa(ndatas,sets=list(c("V1.G1","V2.G1","V3.G1","V4.G1","V5.G1","V6.G1"),c("V1.G2","V2.G2","V3.G2","V4.G2","V7.G2","V8.G2")...),...) 
+#' # only center or only scale
+
+
+# constructor function: to construct 'mfa' and run the model to get attributes
+# parameter: data: could be a matrix or a data.frame, should be in the same order of sets
+# parameter: sets: list of vector contains vector of indices of each group
+# eg. sets=c(1:3,4:5), means the 1:3 columns of data is Group 1 and the next 4:5 columns is Group2
+# center and scale: the same parameters as in the function scale(), logical values or a numeric vector 
+mfa<-function(data,sets,ncomps=NULL,center=TRUE,scale=TRUE){
+
+datarownames<-row.names(data)
+
+# scale and center
+data<-scale(data,center,scale)
+
+# check singularity
+rank<-Matrix::rankMatrix(data)[1]
+if (!is.null(ncomps)){
+  if ((ncomps)>=rank){
+   warning(paste0("Matrix is singular: outputing ",rank," dimensions.")) 
+  }else{
+    rank<-ncomps
+  }
+}else{
+  if (!rank%in%c(dim(data))){
+  warning(paste0("Matrix is singular: outputing ",rank," dimensions."))
+}
+}
+
+# if sets is character: turn sets into indicies acccording to rownames of data
+osets<-sets
+if (!is.numeric(sets[[1]])){
+  newlist<-list()
+  for (i in 1:length(sets)){
+  newlist[[i]]<-c(which(colnames(data)==sets[[i]][1]):which(colnames(data)==sets[[i]][length(sets[[i]])]))
+  }
+sets<-newlist
+}
+
+# divide data into several group according to values in sets
+# store the ith group of data to variable "Groupi"
+for (i in 1:length(sets)) {
+assign(paste0("Group",i),data.matrix(data[,min(sets[[i]]):max(sets[[i]])]))
+}
+
+
+# for each data groups conduct svd
+# store the first singular values in singularvalues
+singularvalues<-c(rep(1,dim(data)[1]))
+for (i in 1:length(sets)) {
+singularvalues[i]<-max(svd(eval(parse(text=paste0("Group",i))))$d)
+}
+
+
+# construct A to compute Q: QAQt=I
+# A's diagonal elements are the inverse of the first square singular values
+# each first square singular value is expanded to the same dimension of each data group
+expanded<-c()
+for (i in 1:length(sets)){
+expanded<-c(expanded,rep(singularvalues[i],max(sets[[i]])-min(sets[[i]])+1))
+}
+weights<-1/expanded^2
+A<-diag(x = 1/expanded^2,length(expanded),length(expanded))
+A_half<-diag(x = 1/expanded,length(expanded),length(expanded))
+A_half_inv<-diag( x = expanded,length(expanded),length(expanded))
+
+
+
+# construct M to compute P: PMPt=I
+M<-diag(x=1/(dim(data)[1]),dim(data)[1],dim(data)[1])
+M_half<-diag(x=1/sqrt((dim(data)[1])),dim(data)[1],dim(data)[1])
+M_half_inv<-diag(x=sqrt((dim(data)[1])),dim(data)[1],dim(data)[1])
+
+
+#  X: the whole data
+X<-data.matrix(data)
+# Construct S=XAXt
+S<-as(X %*% A %*% t(X),"matrix")
+
+# do spectral decomposition on S: S=P*LAMBDA*Pt, PtMP=I
+# construct inverse delta: delta^2=LAMBDA
+eigens<-eigen(S)
+d<-matrix(0,dim(X)[1],dim(X)[1])
+for (i in 1:length(eigens$values)){
+d[i,i]<-eigens$values[i]
+}
+u<-eigens$vectors
+lambda<-as(M_half %*% d %*% M_half,"matrix")
+
+delta_value<-diag(as(sqrt(lambda),"matrix"))
+
+delta_inv<-1/sqrt(lambda)
+delta_inv[is.infinite(delta_inv)]<-0
+
+# P is PMPt=I FOR S=P*LAMBDA*Pt
+P <- as(u %*% M_half_inv,"matrix")
+# Q FOR Q=Xt*M*P*DELTA_inverse
+Q <- as(t(X) %*% M %*% P %*% delta_inv, "matrix")[,1:rank]
+dimnames(Q) <- list(rownames(Q),colnames(Q, do.NULL = FALSE, prefix = "Dim"))
+
+
+# build a list: 'partial_factor_score' to store partial factor score
+# build a matrix: 'common_factor_score' to store common factor score
+# the partial score of group i is named "Partial Score: Group i"
+# partial factor score i = no. of group * A_i* data group i* Q_i
+# common factor score = sum of partial factor score i
+
+
+partial_factor_score<-list()
+common_factor_score<-0
+for (i in 1:length(sets)){
+datai<- data.matrix(eval(parse(text=paste0("Group",i))))
+score<-length(sets) * (1/singularvalues[i]^2) * datai %*% t(datai)  %*% M %*% P %*% delta_inv[,1:rank]
+dimnames(score) <- list(datarownames,colnames(score, do.NULL = FALSE, prefix = "Dim"))
+partial_factor_score[[paste0("Partial Score: Group ",i)]]=as(score,"matrix")
+common_factor_score<-score+common_factor_score
+}
+common_factor_score<-common_factor_score/length(sets)
+
+
+# loading uses Q
+new (Class = "mfa",
+sets=osets,
+eigenvalues = c(delta_value^2)[1:rank],
+weights= weights,
+common_factor_score = as(common_factor_score,"matrix"),
+partial_factor_score = partial_factor_score,
+loadings = as(Q,"matrix")
+)
+}
+
+######################### test ###################
+#load wine data
+data<-read.csv("wine.csv",header=F,stringsAsFactors = F)
+datas<-data[2:length(data[,1]),2:54]
+sets<-list(1:6,7:12,13:18,19:23,24:29,30:34,35:38,39:44,45:49,50:53)
+
+ndatas<-apply(datas,2,function(x){ (as.numeric(x)-mean(as.numeric(x)))/norm(as.numeric(x)-mean(as.numeric(x)),type="2")})
+coln<-c()
+for (i in 1:length(sets)){
+coln<-c(coln,paste0(data[1,sets[[i]]+1],".G",i))
+}
+colnames(ndatas)<-coln
+rownames(ndatas)<-data[2:length(data[,1]),1]
+test<-mfa(ndatas,sets=sets,ncomps=NULL,center=FALSE,scale=FALSE)
+
+
+################ supplementary method #############
+
+#' @export
+
+# set print() to print basic infomation
+setMethod("print",
+  signature="mfa",
+  function(x,...){
+    cat(paste("There are",length(x@eigenvalues),"components."),"\n")
+    cat("The eigenvalue of the first component is: ",  x@eigenvalues[1],"\n")
+    cat("The eigenvalue of the second component is: ",  x@eigenvalues[2],"\n")
+  }
+)
+print(test)
+
+
+# set plot() to plot table given two dimensions
+# plot method and functions for plot mfa
+partial_plot<-function(group_num,data,data2,names){
+  ggplot2::ggplot()+
+    ggplot2::geom_point(data=data,ggplot2::aes(x=data[,1],y=data[,2],color=id),size=2)+
+    ggplot2::geom_point(data=data2,ggplot2::aes(x=data2[,1],y=data2[,2]),color="grey10",shape=17,size=1.5)+
+    ggplot2::geom_text(data=data2,ggplot2::aes(x=data2[,1],y=data2[,2],label=id),size=2,color="black",hjust=-0.15, vjust=-0.05)+
+    ggplot2::scale_shape_manual(values=group_num+1)+
+    ggplot2::theme(plot.title = ggplot2::element_text(size=8, face="bold",vjust=0.05,color="grey40"),
+                   axis.title.x = ggplot2::element_text(size=8, face="bold",vjust=-0.05,color="grey40"),
+                   axis.title.y = ggplot2::element_text(size=8, face="bold",vjust=0.05,color="grey40"),
+                   legend.position="none",
+                   axis.text.x = ggplot2::element_text(color="grey40",size=8),
+                   axis.text.y = ggplot2::element_text(color="grey40",size=8),
+                   panel.grid.minor = ggplot2::element_blank(),
+                   panel.grid.major = ggplot2::element_line(colour = "grey90",size=0.1),
+                   panel.background = ggplot2::element_blank())+
+    # plot x and y axis
+    ggthemes::scale_color_calc()+
+    ggplot2::annotate("segment", x=-Inf,xend=Inf,y=0,yend=0,arrow=ggplot2::arrow(length=ggplot2::unit(0.2,"cm")),size=0.3,color="grey50") +
+    ggplot2::annotate("segment", y=-Inf,yend=Inf,x=0,xend=0,arrow=ggplot2::arrow(length=ggplot2::unit(0.2,"cm")),size=0.3,color="grey50")+
+    # center (0,0)
+    ggplot2::xlim(-max(abs(c(data[,1],data2[,1])))*1.2, max(abs(c(data[,1],data2[,1])))*1.2)+
+    ggplot2::ylim(-max(abs(c(data[,2],data2[,2])))*1.2, max(abs(c(data[,2],data2[,2])))*1.2)+
+    ggplot2::ggtitle(paste0("Partial Factor Score: Group ",group_num))+ggplot2::labs(x=names[1],y=names[2])
+}
+
+#' @param object a R object of mfa
+#' @param dim a integer vector of two values
+#' @export
+
+setMethod("plot",signature="mfa",
+       function(x,dim){
+         blankPlot <- ggplot2::ggplot()+ggplot2::geom_blank(ggplot2::aes(1,1))+
+           ggplot2::theme(
+             plot.background = ggplot2::element_blank(),
+             panel.grid.major = ggplot2::element_blank(),
+             panel.grid.minor = ggplot2::element_blank(),
+             panel.border = ggplot2::element_blank(),
+             panel.background = ggplot2::element_blank(),
+             axis.title.x = ggplot2::element_blank(),
+             axis.title.y = ggplot2::element_blank(),
+             axis.text.x = ggplot2::element_blank(),
+             axis.text.y = ggplot2::element_blank(),
+             axis.ticks = ggplot2::element_blank(),
+             axis.line = ggplot2::element_blank()
+           )
+         
+           sets<-x@sets
+# if sets is character: turn sets into indicies acccording to rownames of data
+if (!is.numeric(sets[[1]])){
+  newlist<-list()
+  for (i in 1:length(sets)){
+  newlist[[i]]<-c(which(rownames(x@loadings)==sets[[i]][1]):which(rownames(x@loadings)==sets[[i]][length(sets[[i]])]))
+  }
+sets<-newlist
+}
+           names<-sapply(dim,function(x){paste0("Dim",x)})
+           partial<-lapply(test@partial_factor_score,function(x){x[,dim]})
+           compromise<-data.frame(x@common_factor_score[,dim])
+           loadings<--data.frame(x@loadings[,dim])
+           eigen<-data.frame("eigen"=x@eigenvalues)
+           eigen$id<-sapply(c(1:length(x@eigenvalues)),function(x){paste0("Dim",x)})
+
+           # rescale loading to singular value
+
+           loadings[,1]<-loadings[,1]*(sqrt(x@eigenvalues[1])/sd(loadings[,1]))
+           loadings[,2]<-loadings[,2]*(sqrt(x@eigenvalues[2])/sd(loadings[,2]))
+    
+           compromise$id<-rownames(compromise)
+           loadings$id<-rownames(loadings)
+
+           # group lable for loadings
+           group<-c(rep(0,length(compromise[,1])))
+           for (i in 1:length(sets)){
+              group[sets[[i]]]<-paste0("Group",i)
+           }
+           loadings$group<-factor(group, levels = unique(group))
+
+           # plot compromise factor score of the two dimension ##############
+           p1<-ggplot2::ggplot()+
+              ggplot2::geom_point(data=compromise,ggplot2::aes(x=compromise[,1],y=compromise[,2],color=id),size=3)+
+              ggplot2::theme(plot.title = ggplot2::element_text(size=10, face="bold",vjust=1,color="grey40"),
+                              axis.title.x = ggplot2::element_text(size=8, face="bold",vjust=-0.5,color="grey40"),
+                              axis.title.y = ggplot2::element_text(size=8, face="bold",vjust=0.5,color="grey40"),
+                              legend.title=ggplot2::element_blank(),
+                              panel.background = ggplot2::element_blank(),
+                             panel.grid.minor = ggplot2::element_line(colour = "grey90",size=0.2),
+                             panel.grid.major = ggplot2::element_line(colour = "grey90",size=0.2),
+                             legend.text=ggplot2::element_text(size=8))+
+              ggthemes::scale_color_calc()+
+              ggplot2::guides(color = ggplot2::guide_legend(keywidth = 0.9, keyheight = 0.9))+
+              # plot x and y axis
+              ggplot2::annotate("segment", x=-Inf,xend=Inf,y=0,yend=0,arrow=ggplot2::arrow(length=ggplot2::unit(0.3,"cm")),size=0.5,color="grey60") +
+              ggplot2::annotate("segment", y=-Inf,yend=Inf,x=0,xend=0,arrow=ggplot2::arrow(length=ggplot2::unit(0.3,"cm")),size=0.5,color="grey60")+
+              # center (0,0)
+              ggplot2::xlim(-max(abs(compromise[,1]))*1.1, max(abs(compromise[,1]))*1.1)+
+              ggplot2::ylim(-max(abs(compromise[,2]))*1.1, max(abs(compromise[,2]))*1.1)+
+              ggplot2::ggtitle(paste0("Compromise Factor Score"))+ggplot2::labs(x=names[1],y=names[2])
+
+
+
+           # plot barchart for eigenvalues
+          p2<-ggplot2::ggplot(data=eigen,ggplot2::aes(x=factor(id,levels=id),y=eigen,fill=factor(id,levels=id)))+
+              ggplot2::geom_bar(stat="identity",width=0.5)+
+              ggthemes::scale_fill_calc()+
+              ggplot2::theme(plot.title = ggplot2::element_text(size=10, face="bold",vjust=1,color="grey40"),
+                           axis.title.x = ggplot2::element_text(size=6, face="bold",vjust=-0.5,color="grey40"),
+                           axis.title.y = ggplot2::element_text(size=8, face="bold",vjust=0.5,color="grey40"),
+                           legend.title=ggplot2::element_blank(),
+                           panel.background = ggplot2::element_blank(),
+                           panel.grid.minor = ggplot2::element_line(colour = "grey90",size=0.2),
+                           panel.grid.major = ggplot2::element_line(colour = "grey90",size=0.2),
+                           axis.text.x = ggplot2::element_text(color="grey40",size=6),
+                           axis.text.y = ggplot2::element_text(color="grey40",size=8),
+                           legend.text=ggplot2::element_text(size=8))+
+              ggplot2::ggtitle(paste0("Eigenvalues"))+ggplot2::labs(x="",y="")+
+              ggplot2::guides(fill = ggplot2::guide_legend(keywidth = 0.9, keyheight = 0.9))
+
+          # plot partial factor score
+            plist <- list()
+            for (i in 1:length(sets)){
+              data<-data.frame(partial[[i]])
+              data[,2]<--data[,2]
+              data$id<-rownames(data)
+              data2<-loadings[sets[[i]],]
+              data2[,1]<--data2[,1]
+              plot<-partial_plot(i,data,data2,names)
+              plist[[i]]<-plot
+            }
+         
+         # arrange output
+            if (length(sets)==10){
+              p3<-do.call(get("grid.arrange", asNamespace("gridExtra")),c(plist,ncol=5,top=""))
+              p<-gridExtra::grid.arrange(blankPlot,p1,p2,p3,ncol=6, nrow=2, widths=c(1,1,1,1,1,1), heights=c(3, 6),layout_matrix = rbind(c(1,3,3,2,2,1), c(4,4,4,4,4,4)))
+              
+              jpeg("mfa.jpeg", width = 14, height = 9, units = 'in', res = 1000)
+              gridExtra::grid.arrange(blankPlot,p1,p2,p3,ncol=6, nrow=2, widths=c(1,1,1,1,1,1), heights=c(3, 6),layout_matrix = rbind(c(1,3,3,2,2,1), c(4,4,4,4,4,4)))
+              dev.off()
+              print(p)
+              cat(" 'mfa.jpeg' is saved in the current folder")
+            }else{p3<-do.call(get("grid.arrange", asNamespace("gridExtra")),c(plist,ncol=floor(sqrt(length(sets))),top=""))
+            p<-gridExtra::grid.arrange(p1,p2,p3,ncol=3)
+            jpeg("mfa.jpeg", width = 14, height = 9, units = 'in', res = 1000)
+            gridExtra::grid.arrange(p1,p2,p3,ncol=3)
+            dev.off()
+            print(p)
+            cat(" 'mfa.jpeg' is saved in the current folder")
+            }
+
+       })
+plot(test,dim=c(1,2))
+
+
+
+
+#' @title Eigenvalue method
+#' @description Returns a table with summarizing information about the obtained eigenvalues.
+#' @param x an R object
+#' @export
+# set eigenvalues() to take 'mfa' and return a table (like Table 2)
+setGeneric("eigenvalues",function(x,...) standardGeneric("eigenvalues"))
+
+#' @export
+setMethod("eigenvalues",signature="mfa",
+  function(x,...){
+    eigenvalue <- x@eigenvalues
+    singular_value <- sqrt(eigenvalue)
+    cumulative <- cumsum(eigenvalue)
+    inertia <- eigenvalue/sum(eigenvalue)*100
+    cumulative_precentage <- cumulative/sum(eigenvalue)*100
+    
+    df <- data.frame(rbind(singular_value,eigenvalue,cumulative,inertia,cumulative_precentage))
+    colnames(df) <- 1:length(eigenvalue)
+    rownames(df) <- c("Singular value", "Eigenvalue","Cumulative","% Inertia","Cumulative % Inertia")
+    df
+  }
+)
+
+eigenvalues(test)
+
+#' @title Contributions method
+#' @description Returns a list of three tables with contributions
+#' @param x an R object
+#' @export
+# set contributions() to take 'mfa' and return a matrix of contributions
+setGeneric("contributions",function(x)standardGeneric("contributions"))
+
+#' @export
+setMethod("contributions",signature="mfa",
+  function(x){
+    
+    
+    K <- length(x@partial_factor_score)
+    q <- x@loadings
+    t <- as.data.frame(table(x@weights))
+    f <- x@common_factor_score
+    alpha <- unique(x@weights)
+    sum <- 0
+    ctr_table <- NULL
+    ctr_obs <- NULL
+    ctr_var <- NULL
+    for(i in 1:K){
+      l <- t[which(t==alpha[i]),2]
+      ctr_var <- rbind(ctr_var,alpha[i]*q[(sum+1):(sum+l),]^2)
+      ctr_table <- rbind(ctr_table,apply(alpha[i]*q[(sum+1):(sum+l),]^2,2,sum))
+      sum <- sum+l
+    }
+    
+    lambda <- apply(1/nrow(f)*f^2,2,sum)
+    ctr_obs <- sweep(1/nrow(f)*f^2,2,STATS = lambda, FUN = "/")
+    list(observations=ctr_obs,
+         variables=ctr_var,
+         table=ctr_table)
+  }
+)
+
+contributions(test)
+
+
+#' @title Rv Coefficients
+#' @description Return a value of Rv coefficient between two tables
+#' @param table1 a normalized data matrix
+#' @param table2 a normalized data matrix
+#' @return a value of Rv coefficient between two tables
+#' @export
+#' @examples
+#' # default 
+#' x1 <- scale(wine_data[,1:6])
+#' x2 <- scale(wine_data[,7:12])
+#' RV(x1,x2)
+
+# set funtion RV() to take two tables and return rv coefficient
+RV<-function(table1,table2){
+	t1 <- t(table1)
+	t2 <- t(table2)
+  sum(diag((table1 %*% t1) %*% (table2 %*% t2)))/sqrt(sum(diag((table1 %*% t1) %*% (table1 %*% t1)))*sum(diag((table2 %*% t2) %*% (table2 %*% t2))))
+}
+
+#' @title Rv Table
+#' @description Return a table of Rv coefficients between any two subsets of a normalized dataset
+#' @param dataset a normalized dataframe or matrix
+#' @param sets list of vector contains vector of indices of each group
+#' @return a table of Rv coefficients
+#' @export
+#' @examples
+#' # default 
+#' nadtas <- scale(wine_data)
+#' RV_table(ndatas,sets=list(1:6,7:12,13:18,19:23,24:29,30:34,35:38,39:44,45:49,50:53))
+RV_table <- function(dataset,sets){
+  if(!is.data.frame(dataset)&!is.matrix(dataset)){stop("dataset must be a matrix or a dataframe")}
+    RV <- matrix(NA,length(sets),length(sets))
+    for(i in 1:length(sets)){
+      for(j in i:length(sets)){
+        rv <- RV(as.matrix(dataset[,sets[[i]]]),as.matrix(dataset[,sets[[j]]]))
+        RV[i,j] <- rv
+        RV[j,i] <- rv
+      }
+    }
+    RV
+}
+
+RV_table(ndatas,sets=list(1:6,7:12,13:18,19:23,24:29,30:34,35:38,39:44,45:49,50:53))
+
+
+#' @title Lg Coefficients
+#' @description Return a value of Lg coefficient between two tables
+#' @param table1 a normalized data matrix
+#' @param table2 a normalized data matrix
+#' @return a value of Lg coefficient between two tables
+#' @export
+#' @examples
+#' # default 
+#' x1 <- scale(wine_data[,1:6])
+#' x2 <- scale(wine_data[,7:12])
+#' LG(x1,x2)
+
+# set funtion LG() to take two tables and return lg coefficient
+LG<-function(table1,table2){
+	t1 <- t(table1)
+	t2 <- t(table2)
+	gamma1<-svd(table1)$d[1]
+	gamma2<-svd(table2)$d[1]
+  sum(diag((table1 %*% t1) %*% (table2 %*% t2)))/(gamma1^2*gamma2^2)
+}
+
+#' @title Lg Table
+#' @description Return a table of Lg coefficients between any two subsets of a normalized dataset
+#' @param dataset a normalized dataframe or matrix
+#' @param sets list of vector contains vector of indices of each group
+#' @return a table of Lg coefficients
+#' @export
+#' @examples
+#' # default 
+#' nadtas <- scale(wine_data)
+#' LG_table(ndatas,sets=list(1:6,7:12,13:18,19:23,24:29,30:34,35:38,39:44,45:49,50:53))
+
+LG_table <- function(dataset,sets){
+  if(!is.data.frame(dataset)&!is.matrix(dataset)){stop("dataset must be a matrix or a dataframe")}
+    LG <- matrix(NA,length(sets),length(sets))
+    for(i in 1:length(sets)){
+      for(j in i:length(sets)){
+        lg <- LG(as.matrix(dataset[,sets[[i]]]),as.matrix(dataset[,sets[[j]]]))
+        LG[i,j] <- lg
+        LG[j,i] <- lg
+      }
+    }
+    LG
+}
+LG_table(ndatas,sets=list(1:6,7:12,13:18,19:23,24:29,30:34,35:38,39:44,45:49,50:53))
+
+
+# Bootstrap
+#' @title Bootstrap
+#' @description Return a matrix of bootstrap ratio
+#' @param mfa an 'mfa' object
+#' @param B an integer number of a bootstrap sample size
+#' @return a matrix of bootstrap ratio
+#' @export
+#' @examples
+#' # default 
+#' ndatas<-apply(wine_data,2,function(x){ (x-mean(x))/norm(x-mean(x),type="2")})
+#' test<-mfa(ndatas,sets=list(1:6,7:12,13:18,19:23,24:29,30:34,35:38,39:44,45:49,50:53),center=FALSE,scale=FALSE)
+#' bootstrap(test,1000)
+
+setGeneric("bootstrap",function(object,nbt=1000)standardGeneric("bootstrap"))
+setMethod("bootstrap",signature="mfa",
+          function(object,nbt=1000){
+          groups<-length(object@partial_factor_score)
+          series<-sample(c(seq(1:10)),nbt*groups,TRUE)
+          bts<-data.frame(table(series))
+          F<-matrix(0,dim(object@partial_factor_score[[1]])[1],dim(object@partial_factor_score[[1]])[2])
+          for (i in 1:groups){
+            F<-F+bts[i,2]*object@partial_factor_score[[i]]
+          }
+          MEAN<-F/(nbt*groups)
+          F1<-matrix(0,dim(object@partial_factor_score[[1]])[1],dim(object@partial_factor_score[[1]])[2])
+          for (i in 1:nbt){
+            temp<-matrix(0,dim(object@partial_factor_score[[1]])[1],dim(object@partial_factor_score[[1]])[2])
+            for (ii in 1:groups){
+              s<-(i-1)*10+ii
+              temp<-temp+object@partial_factor_score[[series[s]]]
+            }
+          F1<-F1+(temp/groups-MEAN)*(temp/groups-MEAN)
+          }
+          VAR<-F1/nbt
+          return(MEAN/sqrt(VAR))
+          })
+
+  
+
+            
+function(mfa,B){
+  if(class(mfa)!="mfa"){stop("mfa must be an 'mfa' object")}
+  partial <- mfa@partial_factor_score
+  l <- length(partial)
+  common_sum <-  matrix(0,dim(partial[[1]])[1],dim(partial[[1]])[2])
+  common_sqrsum <- matrix(0,dim(partial[[1]])[1],dim(partial[[1]])[2])
+  for(j in 1:B){
+    sample <- sample(1:l,l,replace = TRUE)
+    #sample <- 1:10
+    sum <- matrix(0,dim(partial[[1]])[1],dim(partial[[1]])[2])
+    for(i in sample){
+      sum <- sum + partial[[sample[i]]]
+    }
+    common <- sum/l
+    common_sqrsum <- common_sqrsum + common^2
+    common_sum <- common_sum + common
+  }
+  common_mean <- common_sum/B
+  common_sqrmean <- common_sqrsum/B
+  common_var <- common_sqrmean - common_mean^2
+  common_sd <- sqrt(common_var)
+  boostrap_ratio <- common_mean/common_sd
+  boostrap_ratio 
+  #common_sd
+}
+
+bootstrap(test,1000)
+```
+
+
+
+########################### Shiny ###########################
+
+# for shiny
+library(shiny)
+ui <- fluidPage()
+server <- function(input, output) {
+  # for inputs
+  name<-reactive({
+    startpoint<-c(input$x,input$y)
+  })
+    
+  output$plot <- renderPlot({
+    
+    # create a S4 class 
+  
+    # initialize use constructor function
+    
+    # set new method 
+    
+    # instanced
+    data=read.csv("")
+    my_mfa<-mfa()
+    plot(mfa)
+  })
+}
+
+ui<-fluidPage(
+  titlePanel(h1("MFA")),
+  plotOutput("plot"),
+    fluidRow(
+)
+
+
+shinyApp(ui = ui, server = server)
+
+```{r}
+library(devtools)
+
+# creating documentation (i.e. the Rd files in man/)
+devtools::document()
+
+# checking documentation
+devtools::check_man()
+
+# run tests
+devtools::test()
+
+# checking documentation
+devtools::build_vignettes()
+
+# building tarball (e.g. oski_0.1.tar.gz)
+devtools::build()
+
+# checking install
+devtools::install()
+
+install.packages("~/243Project/MFA_0.0.1.0000.tar.gz", repos = NULL, type="source")
+
+```

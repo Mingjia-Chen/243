@@ -1,0 +1,10 @@
+load("/Users/Lee/243Project/MFA/data/wine.rda")
+load("/Users/Lee/243Project/MFA/data/wine.rds")
+load("/Users/Lee/243Project/MFA/data/wine.RData")
+wine
+load("/Users/Lee/243Project/MFA/data/wine.rds")
+load("/Users/Lee/243Project/MFA/data/wine.rda")
+head（wine)
+wine
+load("/Users/Lee/243Project/MFA/data/wine.rda")
+wine
